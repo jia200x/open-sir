@@ -1,5 +1,7 @@
 """Contains class and ODE system of SIR model"""
 import numpy as np
+import matplotlib.pyplot as plt
+import copy
 from .model import Model, _validate_params
 
 SIR_NUM_PARAMS = 2
@@ -40,11 +42,25 @@ class SIR(Model):
     IC = ["n_S0", "n_I0", "n_R0"]
     NAME = "SIR"
 
-    def predict(self, n_days=7):
+    def predict(self, n_days=7, n_I=None, n_R=None):
         """ Predict Susceptible, Infected and Removed
 
         Args:
             n_days (int): number of days to predict
+
+            n_I (int): number of infected at the last
+            day of available data. If no number of
+            infected is provided, the value is taken
+            from the last element of the number of
+            infected array on which the model was
+            fitted.
+
+            n_R (int): number of removed at the last
+            day of available data. If no number of
+            removed is provided, the value is set as
+            the number of removed calculated by the
+            SIR model as a consequence of the parameter
+            fitting.
 
         Returns:
             np.array: Array with:
@@ -54,7 +70,29 @@ class SIR(Model):
                 - I: Predicted number of infected
                 - R: Predicted number of removed
         """
-        return self.solve(n_days, n_days + 1).fetch()
+
+        # Get initial values for the predictive
+        # model initial conditions
+        pred_ic = self.w0 * self.pop
+
+        if n_I is None:
+            # Obtain number of infected from the last known
+            # data point in the sample data
+            pred_ic[1] = self.fit_attr["n_obs"][-1]
+        else:
+            pred_ic[1] = n_I
+
+        if n_R is None:
+            # Estimate number of recovered from the predictions
+            pred_ic[2] = self.fetch()[int(self.fit_attr["t_obs"][-1]), 3]
+
+        # Calculate new number of susceptible
+        pred_ic[0] = self.pop - sum(pred_ic[1:])
+        # Create a shallow copy of the model
+        pred_model = copy.copy(self)
+        pred_model.set_params(pred_model.p, pred_ic)
+
+        return pred_model.solve(n_days, n_days + 1).fetch()
 
     def set_params(self, p, initial_conds):
         """ Set model parameters.
@@ -112,7 +150,6 @@ class SIR(Model):
         Returns:
             SIR: Reference to self
         """
-        self.fit_input = 2  # By default, fit against infected
         if array:
             arr = np.array(array, dtype=float)
         else:
@@ -120,6 +157,7 @@ class SIR(Model):
 
         _validate_params(arr, SIR_NUM_PARAMS)
 
+        self.fit_input = 2  # By default, fit against infected
         self.p = arr
         return self
 
@@ -159,6 +197,39 @@ class SIR(Model):
         self.pop = np.sum(arr)
         self.w0 = arr / self.pop
         return self
+
+    def plot(self):
+        if self.sol is None:
+            raise self.InitializationError(
+                "Model must be either solved or fitted before plotting"
+            )
+
+        t = self.fetch()[:, 0]
+        n_i = self.fetch()[:, 2]
+        n_r = self.fetch()[:, 3]
+        fig, ax1 = plt.subplots(figsize=[5, 5])
+
+        color = "tab:red"
+        ax1.set_xlabel("Time / days", size=14)
+        ax1.set_ylabel("Number of infected", size=14)
+        ax1.plot(t, n_i, color=color, linewidth=4)
+        ax1.tick_params(axis="y", labelcolor=color)
+        ax1.yaxis.label.set_color(color)
+        ax1.tick_params(axis="both", labelsize=13)
+
+        ax2 = ax1.twinx()  # instantiate a second axis that shares the x coordinate
+
+        color = "tab:blue"
+        ax2.set_ylabel("Number of removed", size=14)
+        ax2.plot(t, n_r, color=color, linestyle=":", linewidth=4)
+        ax2.tick_params(axis="y", labelcolor=color)
+        ax2.yaxis.label.set_color(color)
+        ax2.tick_params(axis="both", labelsize=13)
+
+        plt.xlim(t[0], t[-1])
+
+        plt.title("SIR model predictions", size=16)
+        plt.show()
 
     @property
     def _model(self):

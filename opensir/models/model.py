@@ -39,9 +39,8 @@ class Model(ConfidenceIntervalsMixin):
         self.p = None
         self.pop = None
         self.w0 = None
-        self.pcov = None
         self.fit_input = None
-        self.fit_index = None  # Store fitting info for post-regression analysis
+        self.fit_attr = None  # Dict set after the first call of fit
 
     class InvalidParameterError(Exception):
         """Raised when an initial parameter of a value is not correct"""
@@ -54,6 +53,10 @@ class Model(ConfidenceIntervalsMixin):
         not equal to the dimension of the observed cases, or if the length
         of fit_index has a length different than the length
         of the parameter array self.p"""
+
+    class InitializationError(Exception):
+        """Raised when a function executed violating the
+        logical sequence of the Open-SIR pipeline"""
 
     @property
     def _model(self):
@@ -161,7 +164,7 @@ class Model(ConfidenceIntervalsMixin):
         """
         return self.p[0] / self.p[1]
 
-    def fit(self, t_obs, n_obs, population, fit_index=None):
+    def fit(self, t_obs, n_obs, fit_index=None):
         """ Use the Levenberg-Marquardt algorithm to fit
         model parameters consistent with True entries in the fit_index list.
 
@@ -171,10 +174,11 @@ class Model(ConfidenceIntervalsMixin):
                 Must be a non-decreasing array.
             n_obs (numpy.nparray): Vector which contains the observed
                 epidemiological variable to fit the model against.
-                It must be consistent with t_obs. The model fit_input
-                attribute defines against which epidemiological variable
-                the fitting is going to be performed.
-            population (integer): Size of the objective population
+                It must be consistent with t_obs and with the initial
+                conditions defined when building the model and using the
+                set_parameters and set_initial_conds function.
+                The model fit_input attribute defines against which
+                epidemiological variable the fitting will be performed.
             fit_index (list of booleans , optional): this list must be
                 of the same size of the number of  parameters of the model.
                 The parameter p[i] will be fitted if fit_index[i] = True. Otherwise,
@@ -206,29 +210,43 @@ class Model(ConfidenceIntervalsMixin):
         if len(t_obs) != len(n_obs):
             raise self.InconsistentDimensionsError(Exception)
         # if no par_index is provided, fit only the first parameter
-        if (fit_index is None) & (self.fit_index is None):
+        if fit_index is None:
             fit_index = [False for i in range(len(self.p))]
             fit_index[0] = True
         elif len(fit_index) != len(self.p):
             raise self.InconsistentDimensionsError(Exception)
 
+        # Initialize self.fit_attr in the first call of fit
+        if self.fit_attr is None:
+            self.fit_attr = {
+                "fit_input": self.fit_input,  # Is not None because it depends on the model
+                "fit_index": None,
+                "t_obs": None,
+                "n_obs": None,
+                "pcov": None,
+            }
+
         # Check consistent inputs for fitting
         # for i in
-
-        self.fit_index = fit_index
+        # Set post-fit model attributes
+        self.fit_attr["fit_index"] = fit_index
+        if self.fit_attr["t_obs"] is None:
+            self.fit_attr["t_obs"] = t_obs
+        if self.fit_attr["n_obs"] is None:
+            self.fit_attr["n_obs"] = n_obs
 
         # Initial values of the parameters to be fitted
-        fit_params0 = np.array(self.p)[self.fit_index]
+        fit_params0 = np.array(self.p)[self.fit_attr["fit_index"]]
         # Define fixed parameters: this set of parameters won't be fitted
         # fixed_params = self.p[fix_index]
 
-        def function_handle(t, *par_fit, pop=population):
+        def function_handle(t, *par_fit, pop=self.pop):
             params = np.array(self.p)
-            params[self.fit_index] = par_fit
+            params[self.fit_attr["fit_index"]] = par_fit
             self.p = params
             self._update_ic()  # Updates IC if necessary. For example, i_o/x_0 for SIR-X
             sol_mod = call_solver(self._model, self.p, self.w0, t)
-            return sol_mod[:, self.fit_input] * pop
+            return sol_mod[:, self.fit_attr["fit_input"]] * pop
 
         # Fit parameters
         # Ensure non-negativity and a loose upper bound
@@ -237,8 +255,8 @@ class Model(ConfidenceIntervalsMixin):
         par_opt, pcov = curve_fit(
             f=function_handle, xdata=t_obs, ydata=n_obs, p0=fit_params0, bounds=bounds
         )
-        self.p[self.fit_index] = par_opt
-        self.pcov = pcov  # This also flags that the model was fitted
+        self.p[self.fit_attr["fit_index"]] = par_opt
+        self.fit_attr["pcov"] = pcov  # This also flags that the model was fitted
         return self
 
     def _update_ic(self):

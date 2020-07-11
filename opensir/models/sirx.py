@@ -1,6 +1,8 @@
 """Contains class and ODE system of SIR-X model"""
-from .model import Model, _validate_params
+import matplotlib.pyplot as plt
 import numpy as np
+import copy
+from .model import Model, _validate_params
 
 SIRX_NUM_PARAMS = 5
 SIRX_NUM_IC = 4
@@ -54,11 +56,27 @@ class SIRX(Model):
     IC = ["n_S0", "n_I0", "n_R0", "n_X0"]
     NAME = "SIRX"
 
-    def predict(self, n_days=7):
-        """ Predict Susceptible, Infected and Recovered
+    def predict(self, n_days=7, n_X=None, n_R=None):
+        """ Predicts Susceptible, Infected, Removed and Quarantined
+        in the next n_days from the last day of the sample used to
+        train the model.
 
         Args:
             n_days (int): number of days to predict
+
+            n_X (int): number of confirmed cases at the last
+            day of available data. If no number of
+            confirmed cases is provided, the value is taken
+            from the last element of the number of
+            confirmed cases array on which the model was
+            fitted.
+
+            n_R (int): number of removed at the last
+            day of available data. If no number of
+            removed is provided, the value is set as
+            the number of removed calculated by the
+            SIR-X model as a consequence of the parameter
+            fitting.
 
         Returns:
             np.array: Array with:
@@ -69,7 +87,36 @@ class SIRX(Model):
                 - R: Predicted number of removed
                 - X: Predicted number of quarantined
         """
-        return self.solve(n_days, n_days + 1).fetch()
+
+        # Get initial values for the predictive
+        # model initial conditions
+        pred_ic = self.w0 * self.pop
+
+        if n_X is None:
+            # Obtain number of quarantined from the last known
+            # data point in the sample data
+            pred_ic[3] = self.fit_attr["n_obs"][-1]
+        else:
+            pred_ic[3] = n_X
+
+        if n_R is None:
+            # Estimate number of recovered from the predictions
+            pred_ic[2] = self.fetch()[int(self.fit_attr["t_obs"][-1]), 3]
+        else:
+            pred_ic[2] = n_R
+
+        # Estimate number of infected
+        pred_ic[1] = self.fetch()[int(self.fit_attr["t_obs"][-1]), 2]
+        # over tested. p[-1] = inf_over_test
+        # pred_ic[1] = pred_ic[3] * self.p[-1]
+        # Calculate new number of susceptible
+        # nS = population - (nI+nR+nX)
+        pred_ic[0] = self.pop - sum(pred_ic[1:])
+        # Create a shallow copy of the model
+        pred_model = copy.copy(self)
+        pred_model.set_params(pred_model.p, pred_ic)
+
+        return pred_model.solve(n_days, n_days + 1).fetch()
 
     def set_parameters(
         self,
@@ -96,7 +143,9 @@ class SIRX(Model):
         Returns:
             SIRX: Reference to self
         """
-        self.fit_input = 4  # By default, fit against containment compartment X
+        # By default, fit against containment compartment X
+        self.fit_input = 4
+
         if array:
             arr = np.array(array, dtype=float)
         else:
@@ -144,7 +193,8 @@ class SIRX(Model):
             SIRX: Reference to self
         """
         super().set_params(p, initial_conds)
-        self.fit_input = 4  # By default, fit against containment compartment X
+        # By default, fit against containment compartment X
+        self.fit_input = 4
         return self
 
     def set_initial_conds(self, array=None, n_S0=None, n_I0=None, n_R0=None, n_X0=None):
@@ -185,6 +235,40 @@ class SIRX(Model):
         self.pop = np.sum(arr)
         self.w0 = arr / self.pop
         return self
+
+    def plot(self):
+        if self.sol is None:
+            raise self.InitializationError(
+                "Model must be either solved or fitted before plotting"
+            )
+
+        t = self.fetch()[:, 0]
+        n_i = self.fetch()[:, 2]
+        n_x = self.fetch()[:, 4]
+
+        fig, ax1 = plt.subplots(figsize=[5, 5])
+
+        color = "tab:red"
+        ax1.set_xlabel("Time / days", size=14)
+        ax1.set_ylabel("Number of infected $N_I$", size=14)
+        ax1.plot(t, n_i, color=color, linewidth=4)
+        ax1.tick_params(axis="y", labelcolor=color)
+        ax1.yaxis.label.set_color(color)
+        ax1.tick_params(axis="both", labelsize=13)
+
+        ax2 = ax1.twinx()  # instantiate a second axis that shares the x coordinate
+
+        color = "tab:blue"
+        ax2.set_ylabel("Number of quarantined $N_X$", size=14)
+        ax2.plot(t, n_x, color=color, linestyle=":", linewidth=4)
+        ax2.tick_params(axis="y", labelcolor=color)
+        ax2.yaxis.label.set_color(color)
+        ax2.tick_params(axis="both", labelsize=13)
+
+        plt.xlim(t[0], t[-1])
+
+        plt.title("SIR-X model predictions", size=16)
+        plt.show()
 
     def _update_ic(self):
         """Updates i_0 = (i_0/x_0)*x_0 in the context
